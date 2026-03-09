@@ -1,0 +1,21 @@
+.env
+.env.*
+!.env.example
+
+venv/
+.venv/
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+
+.DS_Store
+.idea/
+.vscode/
+
+logs/
+*.log
+
+# Runtime generated state; do not commit
+config/state.json
+config/contacted_list.json
