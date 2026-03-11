@@ -18,7 +18,8 @@
 ├── config/
 │   ├── contacted_list.json
 │   ├── station_kb.txt
-│   └── state.json               # 扫码登录后自动生成
+│   ├── state.json               # 可选导出登录态（调试用）
+│   └── user_data/               # 持久化浏览器用户目录（主流程复用）
 ├── core/
 │   ├── browser_manager.py
 │   ├── hunter.py
@@ -63,29 +64,50 @@ cp .env.example .env                # Windows: copy .env.example .env
 - `LLM_BASE_URL`：如 `https://api.deepseek.com`
 - `LLM_MODEL`：如 `deepseek-chat`
 - `FEISHU_WEBHOOK_URL`：线索推送地址（可为空，空则只本地标记）
+- `FEISHU_WEBHOOK_TOKEN`：可选，给 webhook 增加鉴权请求头 `X-Webhook-Token`
 - `BOSS_LOGIN_URL` / `BOSS_RECOMMEND_URL` / `BOSS_INBOX_URL`：站点 URL（默认已给）
+  - 推荐（骑手招聘账号）：`BOSS_RECOMMEND_URL=https://www.zhipin.com/web/chat/recommend`
+  - 沟通（聊天列表）：`BOSS_INBOX_URL=https://www.zhipin.com/web/chat/index`
 - `HEADLESS`：`false`（建议）
+- `BROWSER_CHANNEL`：浏览器渠道，默认 `chrome`（推荐，避免使用 testing 浏览器）
+- `BROWSER_EXECUTABLE_PATH`：可选，手动指定浏览器可执行文件路径；若配置则优先于 `BROWSER_CHANNEL`
+- `BROWSER_USER_AGENT`：可选，自定义 UA；留空则使用浏览器真实 UA（更稳）
+- `BROWSER_USE_NATIVE_WINDOW`：默认 `true`，使用系统原生窗口尺寸（避免固定 viewport 指纹）
+- `BROWSER_IGNORE_ENABLE_AUTOMATION`：默认 `true`，移除 `--enable-automation` 启动参数
+- `BROWSER_LOCALE`：默认 `zh-CN`
+- `BROWSER_ACCEPT_LANGUAGE`：默认 `zh-CN,zh;q=0.9,en;q=0.8`
+- `BROWSER_TIMEZONE_ID`：默认 `Asia/Shanghai`
+- `BROWSER_USE_CDP`：默认 `false`，设为 `true` 后改为“手工启动 Chrome + Playwright 接管”
+- `BROWSER_CDP_ENDPOINT`：默认 `http://127.0.0.1:9222`
+- `HUNT_BATCH_SIZE`：每轮打招呼人数，默认 `3`（每 3 人切一次沟通）
+- `FARM_ROUNDS_PER_BATCH`：每轮穿插沟通处理未读次数，默认 `8`
+- `HUNT_WINDOW_MINUTES`：hunting 阶段时长（分钟），默认 `10`
+- `HUNT_MAX_GREETINGS`：hunting 阶段最多打招呼人数，默认 `20`
+- `PROACTIVE_FIRST_MESSAGE_ENABLED`：是否启用主动首句，默认 `false`
+- `PROACTIVE_FIRST_MESSAGE_TEMPLATE`：主动首句模板（启用后生效）
 
 3) 先执行扫码登录（保存会话）
 
 ```bash
-python scripts/manual_login.py
+python3 -m scripts.manual_login
 ```
 
-登录成功后会生成 `config/state.json`，后续启动可复用登录态。
+登录成功后会写入 `config/user_data/`，后续主流程默认复用该目录下的登录态。  
+`config/state.json` 作为可选导出文件保留（便于调试/迁移），但不是主流程复用的必要条件。
 
 4) 启动主流程
 
 ```bash
-python main.py
+python3 main.py
 ```
 
 ## 运行逻辑（Orchestrator）
 
 `main.py` 会循环执行：
 
-- Hunting：推荐页运行约 10 分钟或最多发送 20 次问候
-- Farming：消息页运行约 5 分钟并处理未读
+- Hunting 与 Farming 穿插执行：每轮先在推荐页打招呼（默认最多 3 人），再切到沟通页处理未读
+- 默认 hunting 窗口约 10 分钟或最多发送 20 次问候，结束后再补跑一小段 farming
+- 可选主动首句：打招呼成功后可自动发送一条模板消息（由 `.env` 开关控制）
 - 异常自动捕获并重启浏览器上下文，不会因单次超时直接退出
 
 ## 站点知识库（RAG）
@@ -113,9 +135,91 @@ python main.py
 - 日志文件：`logs/runner.log`
 - 使用了滚动日志，防止长期运行占满硬盘
 - 常见问题：
-  - 未登录：先执行 `python scripts/manual_login.py`
+  - 未登录：先执行 `python3 -m scripts.manual_login`
+  - 打开空白页/疑似风控：确认 `.env` 中 `BROWSER_CHANNEL=chrome`，并保持 `BROWSER_USER_AGENT` 为空；建议启用 `BROWSER_USE_NATIVE_WINDOW=true`、`BROWSER_IGNORE_ENABLE_AUTOMATION=true`
+  - CDP 接管失败：确认手工 Chrome 已用 `--remote-debugging-port=9222` 启动，且 `BROWSER_CDP_ENDPOINT` 与端口一致
   - 无法调用 LLM：检查 `.env` 中 `OPENAI_API_KEY / LLM_BASE_URL / LLM_MODEL`
-  - 无法推送：确认 `FEISHU_WEBHOOK_URL` 可用且网络可达
+  - 无法推送：确认 `FEISHU_WEBHOOK_URL` 可用且网络可达，若配置了 `FEISHU_WEBHOOK_TOKEN`，需与服务端一致
+
+## 手工登录后接管（CDP）SOP
+
+适用场景：登录页容易空白/疑似风控，希望先人工登录再让脚本接管后续“找候选人 + 跟进消息”。
+
+### Step 0：准备 `.env`
+
+在 `.env` 中设置：
+
+```bash
+BROWSER_USE_CDP=true
+BROWSER_CDP_ENDPOINT=http://127.0.0.1:9222
+```
+
+建议同时保留：
+
+```bash
+HEADLESS=false
+BROWSER_USER_AGENT=
+```
+
+### Step 1：每次先手工启动 Chrome（带调试端口）
+
+> 请先完全退出已有 Chrome 进程，再执行以下命令（避免端口和会话冲突）。
+
+macOS：
+
+```bash
+"/Applications/Google Chrome.app/Contents/MacOS/Google Chrome" \
+  --remote-debugging-address=127.0.0.1 \
+  --remote-debugging-port=9222 \
+  --user-data-dir="$PWD/config/manual_chrome_profile"
+```
+
+Windows（PowerShell）：
+
+```powershell
+& "C:\Program Files\Google\Chrome\Application\chrome.exe" `
+  --remote-debugging-address=127.0.0.1 `
+  --remote-debugging-port=9222 `
+  --user-data-dir="$PWD\config\manual_chrome_profile"
+```
+
+### Step 2：在这个 Chrome 里手工登录 Boss 并停留主页
+
+手工打开并完成：
+
+- 登录页：`BOSS_LOGIN_URL`
+- 登录成功后跳到 Boss 已登录页面（建议停留在推荐页或聊天页）
+
+### Step 3：保存登录态（可选但建议）
+
+在项目目录运行：
+
+```bash
+python3 -m scripts.manual_login
+```
+
+CDP 模式下该脚本不会强制跳转登录页，而是检测当前页面登录态并保存 `config/state.json`。
+
+### Step 4：启动主流程（接管后自动执行）
+
+```bash
+python3 main.py
+```
+
+### Step 5：验证“接管成功”的信号
+
+以下信号同时满足基本可判定接管成功：
+
+1. `main.py` 启动后，手工 Chrome 当前窗口能看到自动跳转到 `BOSS_RECOMMEND_URL` / `BOSS_INBOX_URL`
+2. `logs/runner.log` 中出现 `hunting loop current sent=...` 或 `farming loop handled=...`
+3. `config/contacted_list.json` 出现新增/更新记录
+
+若失败，优先检查：
+
+- 端口占用或未启动：`BROWSER_CDP_ENDPOINT` 不可达
+- 连接了错误 Chrome 实例：没使用同一 `--user-data-dir`
+- 你手工登录后又切换了未登录标签页
+- 若终端提示“超时：5分钟内未检测到登录成功”，通常是页面结构变化导致单一 selector 失效；当前版本已使用“URL + DOM + Cookie”联合判定，可直接重试 `python3 -m scripts.manual_login`
 
 ## Windows 开机自启
 

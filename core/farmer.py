@@ -1,3 +1,5 @@
+import os
+import logging
 from typing import Dict, List, Optional
 
 from playwright.sync_api import Error, Page
@@ -14,8 +16,31 @@ class Farmer:
         self.inbox_url = inbox_url
 
     def navigate_inbox(self) -> None:
+        self._pick_working_page()
+        current_url = (self.page.url or "").strip()
+        logging.info("farmer current_url=%s", current_url)
         self.page.goto(self.inbox_url, wait_until="domcontentloaded")
         random_sleep(1.0, 2.0)
+
+    def _pick_working_page(self) -> None:
+        pages = self.page.context.pages
+        if not pages:
+            return
+        for p in reversed(pages):
+            url = (p.url or "").strip()
+            if "/web/chat/index" in url:
+                self.page = p
+                return
+        for p in reversed(pages):
+            url = (p.url or "").strip()
+            if "zhipin.com/web/chat" in url:
+                self.page = p
+                return
+        for p in reversed(pages):
+            url = (p.url or "").strip()
+            if "zhipin.com" in url and "about:blank" not in url:
+                self.page = p
+                return
 
     def _open_top_unread(self) -> Optional[Dict[str, str]]:
         unread_threads = self.page.locator(".chat-item.unread, .chat-item:has(.red-dot)")
@@ -95,7 +120,11 @@ class Farmer:
         latest_message = self._latest_candidate_message()
         lead = check_for_lead(latest_message)
         if lead:
-            send_to_webhook(candidate_name, lead, candidate_id)
+            webhook_url = os.getenv("FEISHU_WEBHOOK_URL", "").strip()
+            pushed = send_to_webhook(candidate_name, lead, candidate_id)
+            if webhook_url and not pushed:
+                # Webhook configured but push failed: keep unconverted for retry.
+                return False
             mark_candidate_converted(candidate_id, lead)
             return True
 

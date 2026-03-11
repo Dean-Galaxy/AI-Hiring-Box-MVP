@@ -38,12 +38,20 @@ def send_to_webhook(candidate_name: str, contact: str, candidate_id: str) -> boo
     if not webhook_url:
         return False
 
+    webhook_token = os.getenv("FEISHU_WEBHOOK_TOKEN", "").strip()
+    headers = {"Content-Type": "application/json"}
+    if webhook_token:
+        headers["X-Webhook-Token"] = webhook_token
+
     payload = {
         "candidate_id": candidate_id,
         "candidate_name": candidate_name,
         "contact": contact,
     }
-    response = requests.post(webhook_url, json=payload, timeout=10)
+    try:
+        response = requests.post(webhook_url, json=payload, headers=headers, timeout=10)
+    except requests.RequestException:
+        return False
     return response.status_code < 300
 
 

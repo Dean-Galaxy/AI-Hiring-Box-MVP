@@ -19,3 +19,5 @@ logs/
 # Runtime generated state; do not commit
 config/state.json
 config/contacted_list.json
+config/manual_chrome_profile/
+config/user_data/

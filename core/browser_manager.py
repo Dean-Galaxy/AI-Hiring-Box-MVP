@@ -1,9 +1,10 @@
+import os
 import random
 import time
 from pathlib import Path
 from typing import Optional
 
-from playwright.sync_api import BrowserContext, Playwright
+from playwright.sync_api import Browser, BrowserContext, Playwright
 
 
 STATE_PATH = Path("config/state.json")
@@ -20,34 +21,96 @@ def random_sleep(min_sec: float = 0.8, max_sec: float = 2.6) -> None:
     time.sleep(random.uniform(min_sec, max_sec))
 
 
+def _env_bool(name: str, default: bool) -> bool:
+    value = os.getenv(name)
+    if value is None:
+        return default
+    return value.strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _attach_cdp_browser(context: BrowserContext, browser: Browser) -> BrowserContext:
+    setattr(context, "_cdp_browser", browser)
+    setattr(context, "_cdp_managed", True)
+    return context
+
+
+def _connect_cdp_context(playwright: Playwright) -> BrowserContext:
+    endpoint = os.getenv("BROWSER_CDP_ENDPOINT", "http://127.0.0.1:9222").strip()
+    browser = playwright.chromium.connect_over_cdp(endpoint)
+    contexts = browser.contexts
+    if not contexts:
+        browser.close()
+        raise RuntimeError("CDP 已连接但未发现可用 context，请确认手工 Chrome 已打开标签页。")
+    return _attach_cdp_browser(contexts[0], browser)
+
+
 def launch_browser_context(playwright: Playwright, headless: bool = False) -> BrowserContext:
+    if _env_bool("BROWSER_USE_CDP", False):
+        return _connect_cdp_context(playwright)
+
     USER_DATA_DIR.mkdir(parents=True, exist_ok=True)
 
-    width = random.randint(1280, 1680)
-    height = random.randint(720, 980)
+    use_native_window = _env_bool("BROWSER_USE_NATIVE_WINDOW", True)
+    locale = os.getenv("BROWSER_LOCALE", "zh-CN").strip()
+    accept_language = os.getenv("BROWSER_ACCEPT_LANGUAGE", "zh-CN,zh;q=0.9,en;q=0.8").strip()
+    timezone_id = os.getenv("BROWSER_TIMEZONE_ID", "Asia/Shanghai").strip()
+
+    args = [
+        "--disable-blink-features=AutomationControlled",
+        "--disable-dev-shm-usage",
+    ]
+    if use_native_window:
+        args.append("--start-maximized")
+
     kwargs = {
         "headless": headless,
-        "viewport": {"width": width, "height": height},
-        "user_agent": random.choice(USER_AGENTS),
-        "args": [
-            "--disable-blink-features=AutomationControlled",
-            "--disable-infobars",
-            "--disable-dev-shm-usage",
-        ],
+        "viewport": None if use_native_window else {"width": random.randint(1280, 1680), "height": random.randint(720, 980)},
+        "args": args,
+        "locale": locale,
+        "timezone_id": timezone_id,
     }
-    if STATE_PATH.exists():
-        kwargs["storage_state"] = str(STATE_PATH)
+
+    # Prefer stable local browser channel instead of bundled testing browser.
+    browser_channel = os.getenv("BROWSER_CHANNEL", "chrome").strip()
+    browser_executable_path = os.getenv("BROWSER_EXECUTABLE_PATH", "").strip()
+    browser_user_agent = os.getenv("BROWSER_USER_AGENT", "").strip()
+
+    if browser_user_agent:
+        kwargs["user_agent"] = browser_user_agent
+
+    if browser_executable_path:
+        kwargs["executable_path"] = browser_executable_path
+    elif browser_channel:
+        kwargs["channel"] = browser_channel
+
+    # Remove a key automation marker injected by default.
+    if _env_bool("BROWSER_IGNORE_ENABLE_AUTOMATION", True):
+        kwargs["ignore_default_args"] = ["--enable-automation"]
 
     context = playwright.chromium.launch_persistent_context(
         user_data_dir=str(USER_DATA_DIR),
         **kwargs,
     )
 
+    if accept_language:
+        context.set_extra_http_headers({"Accept-Language": accept_language})
+
     # Mask webdriver signal to reduce bot-detection probability.
     context.add_init_script(
         """
 Object.defineProperty(navigator, 'webdriver', {
   get: () => undefined
+});
+
+if (!window.chrome) {
+  Object.defineProperty(window, 'chrome', {
+    value: { runtime: {} },
+    configurable: true
+  });
+}
+
+Object.defineProperty(navigator, 'languages', {
+  get: () => ['zh-CN', 'zh', 'en-US', 'en'],
 });
 """
     )
@@ -65,3 +128,12 @@ def save_auth_state(context: BrowserContext, state_path: Optional[Path] = None) 
     path = state_path or STATE_PATH
     path.parent.mkdir(parents=True, exist_ok=True)
     context.storage_state(path=str(path))
+
+
+def close_browser_context(context: BrowserContext) -> None:
+    # For CDP mode we only close Playwright connection, not user's Chrome process lifecycle.
+    cdp_browser = getattr(context, "_cdp_browser", None)
+    if cdp_browser is not None:
+        cdp_browser.close()
+        return
+    context.close()
