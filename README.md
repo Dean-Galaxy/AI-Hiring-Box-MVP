@@ -85,6 +85,9 @@ cp .env.example .env                # Windows: copy .env.example .env
 - `HUNT_MAX_GREETINGS`：hunting 阶段最多打招呼人数，默认 `20`
 - `PROACTIVE_FIRST_MESSAGE_ENABLED`：是否启用主动首句，默认 `false`
 - `PROACTIVE_FIRST_MESSAGE_TEMPLATE`：主动首句模板（启用后生效）
+- `API_AUTH_TOKEN`：本地 API 鉴权令牌（建议必填，OpenClaw 调用时使用 Bearer Token）
+- `LOCAL_API_HOST`：本地 API 监听地址，默认 `0.0.0.0`
+- `LOCAL_API_PORT`：本地 API 监听端口，默认 `8787`
 
 3) 先执行扫码登录（保存会话）
 
@@ -99,6 +102,18 @@ python3 -m scripts.manual_login
 
 ```bash
 python3 main.py
+```
+
+5) （可选）启动本地 API（给 OpenClaw 远程调用）
+
+```bash
+uvicorn api_server:app --host ${LOCAL_API_HOST:-0.0.0.0} --port ${LOCAL_API_PORT:-8787}
+```
+
+Windows PowerShell：
+
+```powershell
+uvicorn api_server:app --host 0.0.0.0 --port 8787
 ```
 
 ## 运行逻辑（Orchestrator）
@@ -227,6 +242,87 @@ python3 main.py
 - 详细步骤见：`docs/windows_startup.md`
 - 核心做法：将 `run_main.bat` 快捷方式放入 `shell:startup`
 
+## OpenClaw 接入（API 模式）
+
+适用场景：OpenClaw 部署在云端，但浏览器自动化仍在你本机执行。  
+推荐架构：`OpenClaw(云端)` -> `本地 API` -> `main.py`
+
+### 第 1 步：先在本地准备好登录态
+
+```bash
+python3 -m scripts.manual_login
+```
+
+### 第 2 步：配置 `.env` 的 API 参数
+
+```bash
+API_AUTH_TOKEN=请换成一个强随机字符串
+LOCAL_API_HOST=0.0.0.0
+LOCAL_API_PORT=8787
+```
+
+### 第 3 步：启动 API 服务
+
+```bash
+uvicorn api_server:app --host 0.0.0.0 --port 8787
+```
+
+### 第 4 步：先本机验证 API
+
+1. 健康检查（无需鉴权）：
+
+```bash
+curl http://127.0.0.1:8787/healthz
+```
+
+2. 启动主流程（需要 Bearer Token）：
+
+```bash
+curl -X POST http://127.0.0.1:8787/run/start \
+  -H "Authorization: Bearer <API_AUTH_TOKEN>"
+```
+
+3. 查看状态：
+
+```bash
+curl http://127.0.0.1:8787/run/status \
+  -H "Authorization: Bearer <API_AUTH_TOKEN>"
+```
+
+4. 获取已转化线索（默认 `status=converted`）：
+
+```bash
+curl "http://127.0.0.1:8787/leads?status=converted&limit=100" \
+  -H "Authorization: Bearer <API_AUTH_TOKEN>"
+```
+
+5. 停止主流程：
+
+```bash
+curl -X POST http://127.0.0.1:8787/run/stop \
+  -H "Authorization: Bearer <API_AUTH_TOKEN>"
+```
+
+### 第 5 步：让 OpenClaw 调用本地 API
+
+云端不能直接访问 `127.0.0.1`，需要把本地 API 暴露为一个公网 HTTPS 地址（例如内网穿透）。  
+拿到地址后，在 OpenClaw 中按“HTTP 工具 / API 工具”配置：
+
+- Base URL：`https://你的公网域名`
+- Header：`Authorization: Bearer <API_AUTH_TOKEN>`
+- 动作 1（启动）：`POST /run/start`
+- 动作 2（查状态）：`GET /run/status`
+- 动作 3（拉线索）：`GET /leads?status=converted&limit=100`
+- 动作 4（停止）：`POST /run/stop`
+
+### 推荐工作流（新手版）
+
+1. OpenClaw 触发 `POST /run/start`
+2. 每 1-2 分钟轮询 `GET /run/status`
+3. 若 `running=true`，继续轮询；若异常，告警你人工处理
+4. 每 5 分钟调用 `GET /leads?status=converted` 拉取线索
+5. 下班或维护时调用 `POST /run/stop`
+
 ## GitHub 部署（仓库发布）说明
 
 该项目的 GitHub 部署目标是：**代码托管 + 自动检查**。  
@@ -252,3 +348,9 @@ python3 main.py
 - 遵守目标平台服务协议和当地法律法规
 - 严格控制频率、间隔和行为节奏，避免过度自动化
 - 妥善保护候选人隐私数据与访问凭据
+
+启动 OpenClaw 隧道（前台）
+ssh -N -L 18789:127.0.0.1:18789 openclaw-tx
+长期稳定版
+autossh -M 0 -N -L 18789:127.0.0.1:18789 openclaw-tx
+http://127.0.0.1:18789
