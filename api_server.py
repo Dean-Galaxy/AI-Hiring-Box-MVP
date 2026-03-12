@@ -17,6 +17,7 @@ load_dotenv()
 
 PROJECT_ROOT = Path(__file__).resolve().parent
 CONTACTED_PATH = PROJECT_ROOT / "config" / "contacted_list.json"
+MAIN_PID_PATH = PROJECT_ROOT / "logs" / "main.pid"
 
 
 def _parse_bearer_token(authorization: Optional[str]) -> str:
@@ -71,6 +72,58 @@ class MainProcessManager:
         self._last_exit_code: Optional[int] = None
         self._command = f"{sys.executable} main.py"
 
+    def _read_pid_file(self) -> Optional[int]:
+        try:
+            if not MAIN_PID_PATH.exists():
+                return None
+            return int(MAIN_PID_PATH.read_text(encoding="utf-8").strip())
+        except (OSError, ValueError):
+            return None
+
+    def _pid_alive(self, pid: int) -> bool:
+        if pid <= 0:
+            return False
+        try:
+            os.kill(pid, 0)
+        except OSError:
+            return False
+        return True
+
+    def _external_running_pid(self) -> Optional[int]:
+        pid = self._read_pid_file()
+        if pid is None:
+            return None
+        if self._pid_alive(pid):
+            return pid
+        try:
+            MAIN_PID_PATH.unlink()
+        except OSError:
+            pass
+        return None
+
+    def _terminate_pid(self, pid: int) -> int:
+        if os.name == "nt":
+            os.kill(pid, signal.SIGTERM)
+        else:
+            try:
+                os.killpg(pid, signal.SIGTERM)
+            except Exception:
+                os.kill(pid, signal.SIGTERM)
+
+        for _ in range(20):
+            if not self._pid_alive(pid):
+                return 0
+            time.sleep(0.5)
+
+        if os.name == "nt":
+            os.kill(pid, signal.SIGKILL)
+        else:
+            try:
+                os.killpg(pid, signal.SIGKILL)
+            except Exception:
+                os.kill(pid, signal.SIGKILL)
+        return 0
+
     def _refresh_state(self) -> None:
         if self._process is None:
             return
@@ -88,6 +141,13 @@ class MainProcessManager:
                 return StartResponse(
                     started=False,
                     pid=self._process.pid,
+                    message="main.py already running",
+                )
+            external_pid = self._external_running_pid()
+            if external_pid is not None:
+                return StartResponse(
+                    started=False,
+                    pid=external_pid,
                     message="main.py already running",
                 )
 
@@ -110,7 +170,17 @@ class MainProcessManager:
         with self._lock:
             self._refresh_state()
             if self._process is None:
-                return StopResponse(stopped=False, message="main.py is not running")
+                external_pid = self._external_running_pid()
+                if external_pid is None:
+                    return StopResponse(stopped=False, message="main.py is not running")
+                self._terminate_pid(external_pid)
+                self._last_exit_code = 0
+                self._started_at = None
+                try:
+                    MAIN_PID_PATH.unlink()
+                except OSError:
+                    pass
+                return StopResponse(stopped=True, message="main.py stopped")
 
             process = self._process
             assert process is not None
@@ -131,13 +201,18 @@ class MainProcessManager:
             self._last_exit_code = process.returncode
             self._process = None
             self._started_at = None
+            try:
+                MAIN_PID_PATH.unlink()
+            except OSError:
+                pass
             return StopResponse(stopped=True, message="main.py stopped")
 
     def status(self) -> RunStatusResponse:
         with self._lock:
             self._refresh_state()
-            running = self._process is not None
-            pid = self._process.pid if self._process else None
+            external_pid = self._external_running_pid()
+            running = self._process is not None or external_pid is not None
+            pid = self._process.pid if self._process else external_pid
             started_at = self._started_at
             uptime = int(time.time() - started_at) if started_at else 0
             return RunStatusResponse(

@@ -1,5 +1,9 @@
+import atexit
 import logging
 import os
+from pathlib import Path
+import signal
+import sys
 import time
 from logging.handlers import RotatingFileHandler
 
@@ -12,6 +16,8 @@ from core.hunter import Hunter
 
 
 load_dotenv()
+
+PID_PATH = Path("logs/main.pid")
 
 
 def _env_int(name: str, default: int) -> int:
@@ -37,6 +43,49 @@ def setup_logging() -> None:
         format="%(asctime)s [%(levelname)s] %(message)s",
         handlers=[handler, logging.StreamHandler()],
     )
+
+
+def _pid_alive(pid: int) -> bool:
+    if pid <= 0:
+        return False
+    try:
+        os.kill(pid, 0)
+    except OSError:
+        return False
+    return True
+
+
+def _write_pid_file(path: Path) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(str(os.getpid()), encoding="utf-8")
+
+
+def _cleanup_pid_file(path: Path) -> None:
+    try:
+        if path.exists() and path.read_text(encoding="utf-8").strip() == str(os.getpid()):
+            path.unlink()
+    except OSError:
+        pass
+
+
+def ensure_single_instance() -> None:
+    if PID_PATH.exists():
+        try:
+            existing_pid = int(PID_PATH.read_text(encoding="utf-8").strip())
+        except (ValueError, OSError):
+            existing_pid = 0
+        if _pid_alive(existing_pid):
+            print(f"main.py already running (pid={existing_pid}), aborting duplicate start.")
+            sys.exit(1)
+    _write_pid_file(PID_PATH)
+    atexit.register(_cleanup_pid_file, PID_PATH)
+
+    def _handle_signal(signum, _frame) -> None:
+        _cleanup_pid_file(PID_PATH)
+        raise SystemExit(0)
+
+    signal.signal(signal.SIGTERM, _handle_signal)
+    signal.signal(signal.SIGINT, _handle_signal)
 
 
 def run_cycle() -> None:
@@ -84,6 +133,7 @@ def run_cycle() -> None:
 
 
 def main() -> None:
+    ensure_single_instance()
     setup_logging()
     while True:
         try:
