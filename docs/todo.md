@@ -1,3 +1,5 @@
+# 原始内容（保留）
+
 Here is the detailed, step-by-step implementation plan based on the PRD. It is structured to ensure a smooth progression from environment setup to the final hardware-ready deployment, with no sudden jumps in complexity.
 
 ### Phase 1: Foundation & Authentication Setup
@@ -191,3 +193,160 @@ This final phase ties the hunting and farming loops together into a continuous, 
 * [x] Create a simple `.bat` script that activates the Python virtual environment and runs `main.py`.
 * [x] Document the steps to add this `.bat` file to the Windows Startup folder (shell:startup).
 * [x] (Optional) Configure a basic logging rotation (`logging` module) to ensure the local hard drive doesn't fill up with log files over months of operation.
+
+---
+
+# 260317 更新内容（追加）
+
+# 执行清单（260317更新版）
+
+> 说明：本清单对应 `docs/specs.md` 的 260317 PRD。  
+> 标记规则：`[x]` 已完成，`[ ]` 待完成。  
+> 依赖格式：`Dependencies: [Txx, Tyy]`
+
+## 阶段A：基础与配置
+
+- [x] **T01 - 冻结260317版需求并同步文档**
+  - Dependencies: `[]`
+  - Context: 将“第7天自动二次问候”规则固化到规范文档，避免后续开发偏差。
+  - Subtasks:
+    - [x] T01.1 更新 `docs/specs.md` 为 260317 PRD
+      - Dependencies: `[]`
+    - [x] T01.2 更新 `docs/todo.md` 为 260317 WBS
+      - Dependencies: `[T01.1]`
+
+- [x] **T02 - 配置体系扩展（新增FollowUp配置）**
+  - Dependencies: `[T01]`
+  - Context: 功能参数全部可配置，支持开关、时间、上限、文案、重试、日报。
+  - Subtasks:
+    - [x] T02.1 设计并落地配置键（`FOLLOWUP_*`、`FEISHU_BOT_WEBHOOK_URL`）
+      - Dependencies: `[T01]`
+    - [x] T02.2 在代码中读取默认值并做兜底
+      - Dependencies: `[T02.1]`
+    - [x] T02.3 更新 `.env.example`
+      - Dependencies: `[T02.2]`
+
+## 阶段B：数据模型与候选人状态
+
+- [x] **T03 - 扩展候选人存储结构**
+  - Dependencies: `[T02]`
+  - Context: 需要记录首次打招呼日期、队列状态、重试次数、失败原因等字段。
+  - Subtasks:
+    - [x] T03.1 增加系统级状态存储（`config/system_state.json`）
+      - Dependencies: `[T02]`
+    - [x] T03.2 扩展候选人记录字段（`first_greet_date/followup_status/...`）
+      - Dependencies: `[T03.1]`
+    - [x] T03.3 保持旧数据兼容（缺字段按默认处理）
+      - Dependencies: `[T03.2]`
+
+- [x] **T04 - 去重键与元数据采集**
+  - Dependencies: `[T03]`
+  - Context: 使用“昵称+首次打招呼日期+年龄+城市+期望岗位”生成固定去重键。
+  - Subtasks:
+    - [x] T04.1 在 `hunter` 中采集年龄/城市/期望岗位
+      - Dependencies: `[T03]`
+    - [x] T04.2 生成并落地 `followup_key`
+      - Dependencies: `[T04.1]`
+    - [x] T04.3 首次打招呼成功时写入 `first_greet_date`
+      - Dependencies: `[T04.2]`
+
+## 阶段C：第7天自动二次问候主流程
+
+- [x] **T05 - 二次问候调度服务**
+  - Dependencies: `[T03, T04]`
+  - Context: 每天10:00跑一次，筛选第7天到期候选人，按规则入队。
+  - Subtasks:
+    - [x] T05.1 新增 `core/followup_service.py`
+      - Dependencies: `[T03, T04]`
+    - [x] T05.2 按“自然日+北京时间”计算到期
+      - Dependencies: `[T05.1]`
+    - [x] T05.3 每日单次执行防重（state记录）
+      - Dependencies: `[T05.2]`
+
+- [x] **T06 - 队列排序、限流、顺延**
+  - Dependencies: `[T05]`
+  - Context: 每日最多30条，优先最早到期，同日按入队时间；超额顺延。
+  - Subtasks:
+    - [x] T06.1 实现排序规则
+      - Dependencies: `[T05]`
+    - [x] T06.2 实现上限截断与顺延统计
+      - Dependencies: `[T06.1]`
+    - [x] T06.3 节流发送间隔3-8秒随机
+      - Dependencies: `[T06.2]`
+
+- [x] **T07 - 发送成功判定与幂等**
+  - Dependencies: `[T06]`
+  - Context: 发送后需判定“消息出现在聊天窗口”，且每人最多1次成功发送。
+  - Subtasks:
+    - [x] T07.1 实现发送后UI成功校验
+      - Dependencies: `[T06]`
+    - [x] T07.2 成功后标记 `followup_status=sent`
+      - Dependencies: `[T07.1]`
+    - [x] T07.3 候选人有联系方式时禁止进入二次问候
+      - Dependencies: `[T07.2]`
+
+- [x] **T08 - 失败重试与补发机制**
+  - Dependencies: `[T07]`
+  - Context: 即时重试2次；仍失败次日补发；最多补发1天；超窗标记补发失败。
+  - Subtasks:
+    - [x] T08.1 实现即时重试（2次）
+      - Dependencies: `[T07]`
+    - [x] T08.2 实现 `retry_pending` 与次日补发
+      - Dependencies: `[T08.1]`
+    - [x] T08.3 超补发窗口标记 `retry_failed`
+      - Dependencies: `[T08.2]`
+
+## 阶段D：可观测与运维能力
+
+- [x] **T09 - 每日汇总告警（飞书）**
+  - Dependencies: `[T05, T08]`
+  - Context: 每天20:00固定发送，即使失败数为0也要发。
+  - Subtasks:
+    - [x] T09.1 新增飞书机器人发送模块 `core/notify.py`
+      - Dependencies: `[T05]`
+    - [x] T09.2 实现日报内容聚合（日期/失败次数/人数/Top3/成功率）
+      - Dependencies: `[T09.1, T08]`
+    - [x] T09.3 接入主循环定时触发（20:00）
+      - Dependencies: `[T09.2]`
+
+- [x] **T10 - 手动重跑入口**
+  - Dependencies: `[T05, T08]`
+  - Context: 提供当日任务手动补跑能力，仍遵守幂等与上限。
+  - Subtasks:
+    - [x] T10.1 新增脚本 `scripts/run_followup_once.py`
+      - Dependencies: `[T05]`
+    - [x] T10.2 API 增加 `/followup/rerun`
+      - Dependencies: `[T10.1]`
+    - [x] T10.3 手动重跑复用同一发送主流程
+      - Dependencies: `[T10.2, T08]`
+
+## 阶段E：主循环接入与发布检查
+
+- [x] **T11 - 主循环接入定时任务**
+  - Dependencies: `[T05, T09, T10]`
+  - Context: 在 `main.py` 中统一调度10:00跟进与20:00日报。
+  - Subtasks:
+    - [x] T11.1 新增 `tick_scheduled_jobs()` 调度钩子
+      - Dependencies: `[T05, T09]`
+    - [x] T11.2 在 hunting/farming 循环中定期触发
+      - Dependencies: `[T11.1]`
+    - [x] T11.3 记录调度结果日志
+      - Dependencies: `[T11.2]`
+
+- [ ] **T12 - 测试与验收回归**
+  - Dependencies: `[T11]`
+  - Context: 完成关键路径联调，确认发送成功率统计口径可用。
+  - Subtasks:
+    - [ ] T12.1 回放“正常发送”链路（到期->入队->发送成功）
+      - Dependencies: `[T11]`
+    - [ ] T12.2 回放“失败重试+次日补发+补发失败”链路
+      - Dependencies: `[T12.1]`
+    - [ ] T12.3 验证20:00日报字段与成功率口径
+      - Dependencies: `[T12.2]`
+
+---
+
+## 依赖总览（无孤立任务）
+
+- 主链路：`T01 -> T02 -> T03 -> T04 -> T05 -> T06 -> T07 -> T08 -> T09 -> T11 -> T12`
+- 运维链路：`T05 + T08 -> T10 -> T11`

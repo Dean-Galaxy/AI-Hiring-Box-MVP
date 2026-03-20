@@ -64,6 +64,11 @@ class LeadsResponse(BaseModel):
     items: list[Dict[str, Any]]
 
 
+class ManualFollowupResponse(BaseModel):
+    ok: bool
+    output: str
+
+
 class MainProcessManager:
     def __init__(self) -> None:
         self._lock = threading.Lock()
@@ -280,3 +285,26 @@ def leads(
     limit: int = Query(default=200, ge=1, le=5000),
 ) -> LeadsResponse:
     return _load_leads(status=status, limit=limit)
+
+
+@app.post("/followup/rerun", response_model=ManualFollowupResponse, dependencies=[Depends(require_api_auth)])
+def followup_rerun() -> ManualFollowupResponse:
+    script_path = PROJECT_ROOT / "scripts" / "run_followup_once.py"
+    if not script_path.exists():
+        raise HTTPException(status_code=404, detail="manual followup script not found")
+    try:
+        proc = subprocess.run(
+            [sys.executable, str(script_path)],
+            cwd=str(PROJECT_ROOT),
+            capture_output=True,
+            text=True,
+            timeout=600,
+            check=False,
+        )
+    except subprocess.TimeoutExpired as exc:
+        raise HTTPException(status_code=504, detail=f"manual rerun timeout: {exc}") from exc
+
+    output = (proc.stdout or "").strip() or (proc.stderr or "").strip()
+    if proc.returncode != 0:
+        raise HTTPException(status_code=500, detail=f"manual rerun failed: {output}")
+    return ManualFollowupResponse(ok=True, output=output)

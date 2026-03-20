@@ -4,7 +4,7 @@ import time
 from pathlib import Path
 from typing import Optional
 
-from playwright.sync_api import Browser, BrowserContext, Playwright
+from playwright.sync_api import Browser, BrowserContext, Page, Playwright
 
 
 STATE_PATH = Path("config/state.json")
@@ -19,6 +19,43 @@ USER_AGENTS = [
 
 def random_sleep(min_sec: float = 0.8, max_sec: float = 2.6) -> None:
     time.sleep(random.uniform(min_sec, max_sec))
+
+
+def _env_float(name: str, default: float) -> float:
+    value = os.getenv(name)
+    if value is None:
+        return default
+    try:
+        return float(value.strip())
+    except ValueError:
+        return default
+
+
+def human_type(
+    page: Page,
+    text: str,
+    target_selector: Optional[str] = None,
+    min_delay_ms: Optional[int] = None,
+    max_delay_ms: Optional[int] = None,
+) -> None:
+    if target_selector:
+        page.click(target_selector)
+
+    env_min_delay = _env_float("TYPING_MIN_DELAY_MS", 130.0)
+    env_max_delay = _env_float("TYPING_MAX_DELAY_MS", 280.0)
+    low = max(40, int(min_delay_ms if min_delay_ms is not None else env_min_delay))
+    high = max(low, int(max_delay_ms if max_delay_ms is not None else env_max_delay))
+    pause_prob = min(max(_env_float("TYPING_PAUSE_PROB", 0.18), 0.0), 0.6)
+
+    for idx, ch in enumerate(text):
+        page.keyboard.type(ch, delay=random.randint(low, high))
+        if ch in "，。！？；：,.!?;:":
+            time.sleep(random.uniform(0.18, 0.45))
+        elif ch in "\n":
+            time.sleep(random.uniform(0.25, 0.5))
+        elif idx > 0 and idx % random.randint(7, 12) == 0 and random.random() < pause_prob:
+            # Occasional short "thinking" pause for more human rhythm.
+            time.sleep(random.uniform(0.2, 0.75))
 
 
 def _env_bool(name: str, default: bool) -> bool:

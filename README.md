@@ -1,13 +1,13 @@
 # 自动招聘外卖员（AI Hiring Box MVP）
 
 基于 `Playwright + Python + LLM` 的本地自动化招聘系统 MVP。  
-目标：在 Boss 端自动筛选候选人、发起沟通、处理回复并提取联系方式（手机号/微信），再推送到外部表格或 webhook。
+目标：在 Boss 端自动筛选候选人、发起沟通、处理回复并提取联系方式（手机号/微信/QQ），再推送到外部表格或 webhook。
 
 ## 功能概览
 
 - 自动浏览候选人推荐页，按规则筛选并打招呼
 - 自动轮询未读会话，提取最近上下文并调用 LLM 回复
-- 正则检测手机号/微信号，命中后标记 `converted`
+- 正则检测手机号/微信号/QQ 号，命中后标记 `converted`
 - 可将线索通过 webhook 推送到飞书/腾讯文档或测试接口
 - 本地持久化候选人状态，避免重复触达
 
@@ -83,6 +83,7 @@ cp .env.example .env                # Windows: copy .env.example .env
 - `FARM_ROUNDS_PER_BATCH`：每轮穿插沟通处理未读次数，默认 `8`
 - `HUNT_WINDOW_MINUTES`：hunting 阶段时长（分钟），默认 `10`
 - `HUNT_MAX_GREETINGS`：hunting 阶段最多打招呼人数，默认 `20`
+- `HUNT_DAILY_MAX_GREETINGS`：每日打招呼总上限（跨循环累计），默认 `60`
 - `PROACTIVE_FIRST_MESSAGE_ENABLED`：是否启用主动首句，默认 `false`
 - `PROACTIVE_FIRST_MESSAGE_TEMPLATE`：主动首句模板（启用后生效）
 - `API_AUTH_TOKEN`：本地 API 鉴权令牌（建议必填，OpenClaw 调用时使用 Bearer Token）
@@ -121,7 +122,7 @@ uvicorn api_server:app --host 0.0.0.0 --port 8787
 `main.py` 会循环执行：
 
 - Hunting 与 Farming 穿插执行：每轮先在推荐页打招呼（默认最多 3 人），再切到沟通页处理未读
-- 默认 hunting 窗口约 10 分钟或最多发送 20 次问候，结束后再补跑一小段 farming
+- 默认 hunting 窗口约 10 分钟或最多发送 20 次问候；并受每日总上限控制（默认 60 次），结束后再补跑一小段 farming
 - 可选主动首句：打招呼成功后可自动发送一条模板消息（由 `.env` 开关控制）
 - 异常自动捕获并重启浏览器上下文，不会因单次超时直接退出
 
@@ -140,6 +141,7 @@ uvicorn api_server:app --host 0.0.0.0 --port 8787
 
 - 手机号：匹配中国大陆 11 位号码
 - 微信号：支持关键词前缀（微信/vx/wx）和常见账号格式
+- QQ 号：支持关键词前缀（qq/扣扣/企鹅号）并自动清洗空格、短横线
 - 命中后会：
   - 调用 webhook（若配置）
   - 更新 `config/contacted_list.json` 为 `status: converted`
